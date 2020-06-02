@@ -30,7 +30,6 @@ public class test : MonoBehaviour
 
         // Move translation along the object's z-axis
         transform.Translate(lr, du, 0);
-        Cam.transform.position = new Vector3(transform.position.x, transform.position.y, Cam.transform.position.z);
     }
 
 
