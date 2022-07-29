@@ -24,7 +24,6 @@ public class TeamControl : MonoBehaviour
         Character cha = mPlayer.GetComponent<Character>();
         if(cha)
         {
-            cha.updateMove(mMovement);
         }
     }
 

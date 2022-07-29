@@ -35,42 +35,42 @@ public class SaveLoadManager : MonoBehaviour
             string fullPath = Path.Combine(Application.persistentDataPath, mSaveFileName);
             Debug.Log(fullPath);
             Directory.CreateDirectory(Path.GetDirectoryName(fullPath));
-            string dataStr = JsonConvert.SerializeObject(gameData);
+            string dataStr = JsonConvert.SerializeObject(gameData, Formatting.Indented, new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.Auto });
 
             using (FileStream stream = new FileStream(fullPath, FileMode.Create))
             {
-                using(StreamWriter writer = new StreamWriter(stream))
+                using (StreamWriter writer = new StreamWriter(stream))
                 {
                     writer.Write(dataStr);
                 }
             }
 
         }
-        catch(Exception)
+        catch (Exception)
         {
 
         }
-        
+
     }
 
     public void loadGame()
     {
         try
         {
-           
+
             string fullPath = Path.Combine(Application.persistentDataPath, mSaveFileName);
             if (File.Exists(fullPath))
             {
                 string dataToLoad = "";
-                using (FileStream stream = new FileStream(fullPath,FileMode.Open))
+                using (FileStream stream = new FileStream(fullPath, FileMode.Open))
                 {
-                    using(StreamReader reader = new StreamReader(stream))
+                    using (StreamReader reader = new StreamReader(stream))
                     {
                         dataToLoad = reader.ReadToEnd();
                     }
                 }
 
-                GameData gd = JsonConvert.DeserializeObject<GameData>(dataToLoad);
+                GameData gd = JsonConvert.DeserializeObject<GameData>(dataToLoad, new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.Auto });
 
                 IEnumerable<ISaveLoad> ds = FindObjectsOfType<MonoBehaviour>().OfType<ISaveLoad>();
                 foreach (var v in ds)
@@ -80,7 +80,7 @@ public class SaveLoadManager : MonoBehaviour
 
             }
         }
-        catch(Exception)
+        catch (Exception)
         {
 
         }
@@ -97,5 +97,10 @@ public class SaveLoadManager : MonoBehaviour
     public void doSave()
     {
         saveGame();
+    }
+
+    public void doLoad()
+    {
+        loadGame();
     }
 }

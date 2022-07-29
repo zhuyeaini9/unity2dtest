@@ -48,18 +48,6 @@ public class Character : MonoBehaviour, ISaveLoad
         mMS.update(this);
     }
 
-    public void updateMove(Vector2 mov)
-    {
-        toOneDir(ref mov);
-        //下面的方式会引起碰撞后无限移动
-        //mRigidbody.velocity = mov * mSpeed;
-
-        setDir(mov);
-
-        Vector2 dp = mov * mSpeed * Time.fixedDeltaTime;
-        transform.position += new Vector3(dp.x, dp.y, 0);
-    }
-
     void toOneDir(ref Vector2 mov)
     {
         if (mov.x > 0 || mov.x < 0)
@@ -94,23 +82,40 @@ public class Character : MonoBehaviour, ISaveLoad
     {
         if (data.mChaDatas.ContainsKey(mGuid))
         {
-            mSpeed = data.mChaDatas[mGuid].speed;
+            CCharacterData cd = data.mChaDatas[mGuid];
+            //------------------------------------------------
+            transform.position = cd.pos;
+            mSpeed = cd.speed;
+            mDir = cd.dir;
+            mControlRole = cd.controlRole;
+            mMS.mStates = cd.states;
+            //------------------------------------------------
+            mSpeed = cd.speed;
         }
     }
 
     public void saveData(GameData data)
     {
         CCharacterData chaData = new CCharacterData();
+        //------------------------------------------------
+        chaData.pos = transform.position;
         chaData.speed = mSpeed;
+        chaData.dir = mDir;
+        chaData.controlRole = mControlRole;
+
+        chaData.states = mMS.mStates;
+        //------------------------------------------------
         data.mChaDatas[mGuid] = chaData;
     }
 }
 
-
-[System.Serializable]
 public class CCharacterData
 {
+    public Vector3 pos;
     public float speed;
+    public DIR dir;
+    public bool controlRole;
+    public Stack<CState> states;
 }
 
 public enum DIR
@@ -136,45 +141,36 @@ public class CState
     public STATE mState;
     public float mTimePast = 0f;
 
-    public virtual void init(params Object[] ps) { }
+    public virtual void init(params object[] ps) { }
     public virtual void unInit() { }
-    public virtual void update(params Object[] ps) { }
+    public virtual void update(params object[] ps) { }
 }
 public class CIdleState : CState
 {
-    List<int> mSpriteIndex = new List<int>() { 0, 1 };
-    int mCurSpriteIndex = 0;
-    DIR mLastDir;
+    public List<int> mSpriteIndex = new List<int>() { 0, 1 };
+    public int mCurSpriteIndex = 0;
     public CIdleState() : base(STATE.IDLE_STATE)
     { }
-    public override void init(params Object[] ps)
+    public override void init(params object[] ps)
     {
         Character cha = ps[0] as Character;
-        mLastDir = cha.mDir;
         mCurSpriteIndex = 0;
         cha.GetComponent<SpriteRenderer>().sprite = cha.mSprites[(int)cha.mDir * 4 + mSpriteIndex[mCurSpriteIndex]];
     }
 
-    public override void update(params Object[] ps)
+    public override void update(params object[] ps)
     {
         mTimePast += Time.deltaTime;
 
         Character cha = ps[0] as Character;
         SpriteRenderer sr = cha.GetComponent<SpriteRenderer>();
 
-        if (Input.GetMouseButtonUp(0))
+        if (cha.mControlRole && CHelp.hasHit())
         {
             Vector3 touchPos = Camera.main.ScreenToWorldPoint(Input.mousePosition);
             CMachineState.getMS().gotoState(STATE.WALK_STATE, false, new CWalkParam(cha, new Vector2(touchPos.x, touchPos.y)));
         }
 
-        if (cha.mDir != mLastDir)
-        {
-            mLastDir = cha.mDir;
-            mCurSpriteIndex = 0;
-            sr.sprite = cha.mSprites[(int)cha.mDir * 4 + mSpriteIndex[mCurSpriteIndex]];
-
-        }
         if (mTimePast > 0.5f)
         {
             mTimePast = 0f;
@@ -195,14 +191,24 @@ public class CWalkParam : Object
         tarPos = tp;
     }
 }
-public class CWalkState : CState
+
+public class CWalkDir
 {
-    List<int> mSpriteIndex = new List<int>() { 0, 1 };
-    int mCurSpriteIndex = 0;
-    DIR mLastDir;
-    Queue<Vector2> mTarPos = new Queue<Vector2>();
+    public Vector2 tarPos;
+    public DIR dir;
+    public CWalkDir(Vector2 v, DIR d)
+    {
+        tarPos = v;
+        dir = d;
+    }
+}
+public class  CWalkState : CState
+{
+    public List<int> mSpriteIndex = new List<int>() { 0, 1, 2, 3 };
+    public int mCurSpriteIndex = 0;
+    public Queue<CWalkDir> mTarPos = new Queue<CWalkDir>();
     public CWalkState() : base(STATE.WALK_STATE) { }
-    public override void init(params Object[] ps)
+    public override void init(params object[] ps)
     {
         CWalkParam wp = ps[0] as CWalkParam;
         gotoTarPos(wp.cha.transform.position, wp.tarPos);
@@ -223,21 +229,23 @@ public class CWalkState : CState
 
         if (dif_x < dif_y)
         {
-            mTarPos.Enqueue(new Vector2(tar.x, pos.y));
-            mTarPos.Enqueue(new Vector2(tar.x, tar.y));
+            mTarPos.Enqueue(new CWalkDir(new Vector2(tar.x, pos.y), tar.x > pos.x ? DIR.RIGHT : DIR.LEFT));
+            mTarPos.Enqueue(new CWalkDir(new Vector2(tar.x, tar.y), tar.y > pos.y ? DIR.TOP : DIR.DOWN));
         }
         else
         {
-            mTarPos.Enqueue(new Vector2(pos.x, tar.y));
-            mTarPos.Enqueue(new Vector2(tar.x, tar.y));
+            mTarPos.Enqueue(new CWalkDir(new Vector2(pos.x, tar.y), tar.y > pos.y ? DIR.TOP : DIR.DOWN));
+            mTarPos.Enqueue(new CWalkDir(new Vector2(tar.x, tar.y), tar.x > pos.x ? DIR.RIGHT : DIR.LEFT));
         }
 
     }
-    public override void update(params Object[] ps)
+    public override void update(params object[] ps)
     {
+        mTimePast += Time.deltaTime;
+
         Character cha = ps[0] as Character;
 
-        if (Input.GetMouseButtonUp(0))
+        if (cha.mControlRole && CHelp.hasHit())
         {
             Vector3 touchPos = Camera.main.ScreenToWorldPoint(Input.mousePosition);
             gotoTarPos(cha.transform.position, new Vector2(touchPos.x, touchPos.y));
@@ -249,18 +257,34 @@ public class CWalkState : CState
             return;
         }
 
-        Vector2 tarPos = mTarPos.Peek();
-        Vector2 tarDir = new Vector2(tarPos.x - cha.transform.position.x, tarPos.y - cha.transform.position.y);
+        CWalkDir wd = mTarPos.Peek();
+        Vector2 tarDir = new Vector2(wd.tarPos.x - cha.transform.position.x, wd.tarPos.y - cha.transform.position.y);
         tarDir.Normalize();
 
         Vector2 dp = tarDir * cha.mSpeed * Time.deltaTime;
         cha.transform.position += new Vector3(dp.x, dp.y, 0);
 
-        if (Mathf.Abs(cha.transform.position.x - tarPos.x) <= 0.01 && Mathf.Abs(cha.transform.position.y - tarPos.y) < 0.01)
+        if (Mathf.Abs(cha.transform.position.x - wd.tarPos.x) <= 0.01 && Mathf.Abs(cha.transform.position.y - wd.tarPos.y) < 0.01)
         {
-            cha.transform.position = new Vector3(tarPos.x, tarPos.y, cha.transform.position.z);
+            cha.transform.position = new Vector3(wd.tarPos.x, wd.tarPos.y, cha.transform.position.z);
             mTarPos.Dequeue();
         }
+
+        SpriteRenderer sr = cha.GetComponent<SpriteRenderer>();
+        if (cha.mDir != wd.dir)
+        {
+            cha.mDir = wd.dir;
+            mCurSpriteIndex = 0;
+            mTimePast = 0f;
+            sr.sprite = cha.mSprites[(int)cha.mDir * 4 + mSpriteIndex[mCurSpriteIndex]];
+        }
+        if (mTimePast > 0.25f)
+        {
+            mTimePast = 0f;
+            mCurSpriteIndex = (mCurSpriteIndex + 1) % mSpriteIndex.Count;
+            sr.sprite = cha.mSprites[(int)cha.mDir * 4 + mSpriteIndex[mCurSpriteIndex]];
+        }
+
     }
 }
 
