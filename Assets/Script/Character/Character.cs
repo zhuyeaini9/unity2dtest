@@ -1,5 +1,6 @@
 ﻿using System.Collections;
 using System.Collections.Generic;
+using UnityEditor;
 using UnityEngine;
 
 public class Character : MonoBehaviour, ISaveLoad
@@ -22,60 +23,42 @@ public class Character : MonoBehaviour, ISaveLoad
         }
         mSprites = Resources.LoadAll<Sprite>(string.Format("Characters/{0}/{0}", name, name));
     }
-    Rigidbody2D mRigidbody;
+    public Rigidbody2D mRigidbody;
+    public LineRenderer mLineRender;
     //----------------------------------------------
     // need save property
     //----------------------------------------------
-    CMachineState mMS;
+    public CMachineState mMS = new CMachineState();
     public float mSpeed = 1;
     public DIR mDir = DIR.DOWN;
     public bool mControlRole = false;
+    public STATE mInitState = STATE.IDLE_STATE;
+    public float mPatrolDis = 5.0f;
+    public Vector2 mBornPos;
+    public CHATYPE mChaType = CHATYPE.NEUTRALITY;
     void Awake()
     {
-        mMS = CMachineState.getMS();
     }
     // Start is called before the first frame update
     void Start()
     {
         mRigidbody = GetComponent<Rigidbody2D>();
+        mLineRender = GetComponent<LineRenderer>();
+        mLineRender.startWidth = 0.01f;
+        mLineRender.endWidth = 0.01f;
+        mLineRender.loop = true;
+        mLineRender.material = new Material(Shader.Find("Sprites/Default"));
+        mLineRender.startColor = new Color(255, 0, 0, 255);
+        mLineRender.endColor = new Color(255, 0, 0, 255);
+        mBornPos = new Vector2(transform.position.x, transform.position.y);
     }
 
     // Update is called once per frame
     void Update()
     {
         if (mMS.mStates.Count <= 0)
-            mMS.gotoState(STATE.IDLE_STATE, false, this);
+            mMS.gotoState(mInitState, false, this);
         mMS.update(this);
-    }
-
-    void toOneDir(ref Vector2 mov)
-    {
-        if (mov.x > 0 || mov.x < 0)
-        {
-            mov.y = 0;
-            return;
-        }
-        if (mov.y > 0 || mov.y < 0)
-        {
-            mov.x = 0;
-            return;
-        }
-    }
-
-    void setDir(Vector2 mov)
-    {
-        if (mov.x != 0 || mov.y != 0)
-        {
-            if (mov.y > 0)
-                mDir = DIR.TOP;
-            if (mov.y < 0)
-                mDir = DIR.DOWN;
-
-            if (mov.x > 0)
-                mDir = DIR.RIGHT;
-            if (mov.x < 0)
-                mDir = DIR.LEFT;
-        }
     }
 
     public void loadData(GameData data)
@@ -88,9 +71,19 @@ public class Character : MonoBehaviour, ISaveLoad
             mSpeed = cd.speed;
             mDir = cd.dir;
             mControlRole = cd.controlRole;
+            if(mControlRole)
+            {
+                Camera.main.GetComponent<PixelPerfectCam>().SendMessage("followCha", this);
+            }
+
             mMS.mStates = cd.states;
+            foreach (var v in mMS.mStates)
+                v.startRoutine(this);
+
+            mInitState = cd.initState;
+            mPatrolDis = cd.patrolDis;
+            mBornPos = cd.bornPos;
             //------------------------------------------------
-            mSpeed = cd.speed;
         }
     }
 
@@ -104,8 +97,37 @@ public class Character : MonoBehaviour, ISaveLoad
         chaData.controlRole = mControlRole;
 
         chaData.states = mMS.mStates;
+        chaData.initState = mInitState;
+        chaData.patrolDis = mPatrolDis;
+        chaData.bornPos = mBornPos;
         //------------------------------------------------
         data.mChaDatas[mGuid] = chaData;
+    }
+
+    [CustomEditor(typeof(Character))]
+    public class CChaDebugInfoPreview : Editor
+    {
+        public override void OnInspectorGUI()
+        {
+            base.OnInspectorGUI();
+
+            var ts = (Character)target;
+            if (ts == null)
+                return;
+
+            if (ts.mMS == null)
+                return;
+
+            // some styling for the header, this is optional
+            var bold = new GUIStyle();
+            bold.fontStyle = FontStyle.Bold;
+            GUILayout.Label("States:", bold);
+
+            foreach (var item in ts.mMS.mStates)
+            {
+                GUILayout.Label(item.mState.ToString());
+            }
+        }
     }
 }
 
@@ -116,6 +138,9 @@ public class CCharacterData
     public DIR dir;
     public bool controlRole;
     public Stack<CState> states;
+    public STATE initState;
+    public float patrolDis;
+    public Vector2 bornPos;
 }
 
 public enum DIR
@@ -131,6 +156,14 @@ public enum STATE
     WALK_STATE,
     ATTACK_STATE,
     DEAD_STATE,
+    PATROL_STATE,
+}
+public enum CHATYPE
+{
+    NPC,
+    NEUTRALITY,
+    ENEMY,
+    FRIEND,
 }
 public class CState
 {
@@ -140,10 +173,173 @@ public class CState
     }
     public STATE mState;
     public float mTimePast = 0f;
+    public bool mCancel = false;
 
     public virtual void init(params object[] ps) { }
-    public virtual void unInit() { }
+    public virtual void unInit(params object[] ps) { mCancel = true; }
     public virtual void update(params object[] ps) { }
+
+    public virtual void startRoutine(Character cha) { }
+}
+public class CPatrolState : CState
+{
+    public List<int> mSpriteIndex = new List<int>() { 0, 1, 2, 3 };
+    public List<int> mSpriteIdleIndex = new List<int>() { 0, 1 };
+
+    public int mCurSpriteIndex = 0;
+    public Queue<CWalkDir> mTarPos = new Queue<CWalkDir>();
+
+    public CPatrolState() : base(STATE.PATROL_STATE) { }
+    public override void init(params object[] ps)
+    {
+        Character cha = ps[0] as Character;
+        gotoTarPos(cha.transform.position, randomPos(cha));
+        startRoutine(cha);
+    }
+    public override void startRoutine(Character cha)
+    {
+        cha.StartCoroutine(updateAni(cha));
+        cha.StartCoroutine(updatePatrolPos(cha));
+    }
+    public override void unInit(params object[] ps)
+    {
+        base.unInit();
+        Character cha = ps[0] as Character;
+        cha.mLineRender.positionCount = 0;
+    }
+    public IEnumerator updatePatrolPos(Character cha)
+    {
+        while (!mCancel)
+        {
+            if (mTarPos.Count <= 0)
+            {
+                if (CHelp.hasPercent(30))
+                {
+                    gotoTarPos(cha.transform.position, randomPos(cha));
+                }
+            }
+            yield return new WaitForSeconds(2.0f);
+        }
+    }
+    public IEnumerator updateAni(Character cha)
+    {
+        SpriteRenderer sr = cha.GetComponent<SpriteRenderer>();
+        while (!mCancel)
+        {
+            if (mTarPos.Count <= 0)
+            {
+                mCurSpriteIndex = (mCurSpriteIndex + 1) % mSpriteIdleIndex.Count;
+                sr.sprite = cha.mSprites[(int)cha.mDir * 4 + mSpriteIdleIndex[mCurSpriteIndex]];
+
+                yield return new WaitForSeconds(0.5f);
+            }
+            else
+            {
+                mCurSpriteIndex = (mCurSpriteIndex + 1) % mSpriteIndex.Count;
+                sr.sprite = cha.mSprites[(int)cha.mDir * 4 + mSpriteIndex[mCurSpriteIndex]];
+
+                yield return new WaitForSeconds(0.25f);
+            }
+        }
+    }
+    public Vector2 randomPos(Character cha)
+    {
+        float disx = cha.mBornPos.x + Random.Range(-cha.mPatrolDis, cha.mPatrolDis);
+        float disy = cha.mBornPos.y + Random.Range(-cha.mPatrolDis, cha.mPatrolDis);
+        return new Vector2(disx, disy);
+    }
+    void gotoTarPos(Vector3 pos, Vector2 tar)
+    {
+        float dif_x = Mathf.Abs(pos.x - tar.x);
+        float dif_y = Mathf.Abs(pos.y - tar.y);
+
+        if (dif_x < dif_y)
+        {
+            mTarPos.Enqueue(new CWalkDir(new Vector2(tar.x, pos.y), tar.x > pos.x ? DIR.RIGHT : DIR.LEFT));
+            mTarPos.Enqueue(new CWalkDir(new Vector2(tar.x, tar.y), tar.y > pos.y ? DIR.TOP : DIR.DOWN));
+        }
+        else
+        {
+            mTarPos.Enqueue(new CWalkDir(new Vector2(pos.x, tar.y), tar.y > pos.y ? DIR.TOP : DIR.DOWN));
+            mTarPos.Enqueue(new CWalkDir(new Vector2(tar.x, tar.y), tar.x > pos.x ? DIR.RIGHT : DIR.LEFT));
+        }
+    }
+
+    void drawCircle(Character cha)
+    {
+        int steps = 40;
+        cha.mLineRender.positionCount = steps;
+        for (int currentStep = 0; currentStep < steps; currentStep++)
+        {
+            float circumPro = (float)currentStep / steps;
+            float currRadian = circumPro * 2 * Mathf.PI;
+            float xScaled = Mathf.Cos(currRadian);
+            float yScaled = Mathf.Sin(currRadian);
+            float x = xScaled * cha.mPatrolDis + cha.transform.position.x;
+            float y = yScaled * cha.mPatrolDis + cha.transform.position.y;
+
+            Vector3 cp = new Vector3(x, y, 0);
+            cha.mLineRender.SetPosition(currentStep, cp);
+        }
+    }
+
+    void checkAttack(Character cha)
+    {
+        Collider2D[] cs = Physics2D.OverlapCircleAll(CHelp.v3tov2(cha.transform.position), cha.mPatrolDis);
+        foreach(var v in cs)
+        {
+            Character findCha = v.GetComponent<Character>();
+            if (!findCha)
+                continue;
+
+            if (cha == findCha || cha.mChaType == findCha.mChaType)
+                continue;
+
+            if((cha.mChaType == CHATYPE.ENEMY && findCha.mChaType == CHATYPE.FRIEND) ||
+                (cha.mChaType == CHATYPE.FRIEND && findCha.mChaType == CHATYPE.ENEMY))
+            {
+
+            }
+        }
+    }
+    public override void update(params object[] ps)
+    {
+        Character cha = ps[0] as Character;
+
+        drawCircle(cha);
+
+        if (cha.mControlRole && CHelp.hasHit())
+        {
+            Vector3 touchPos = Camera.main.ScreenToWorldPoint(Input.mousePosition);
+            gotoTarPos(cha.transform.position, new Vector2(touchPos.x, touchPos.y));
+        }
+
+        if (mTarPos.Count <= 0)
+        {
+            return;
+        }
+
+        CWalkDir wd = mTarPos.Peek();
+
+        if (cha.mDir != wd.dir)
+        {
+            cha.mDir = wd.dir;
+            mCurSpriteIndex = 0;
+        }
+
+        Vector2 tarDir = new Vector2(wd.tarPos.x - cha.transform.position.x, wd.tarPos.y - cha.transform.position.y);
+        tarDir.Normalize();
+
+        Vector2 dp = tarDir * cha.mSpeed * Time.deltaTime;
+        cha.transform.position += new Vector3(dp.x, dp.y, 0);
+
+        if (Mathf.Abs(cha.transform.position.x - wd.tarPos.x) <= 0.01 && Mathf.Abs(cha.transform.position.y - wd.tarPos.y) < 0.01)
+        {
+            cha.transform.position = new Vector3(wd.tarPos.x, wd.tarPos.y, cha.transform.position.z);
+            mTarPos.Dequeue();
+        }
+
+    }
 }
 public class CIdleState : CState
 {
@@ -154,28 +350,37 @@ public class CIdleState : CState
     public override void init(params object[] ps)
     {
         Character cha = ps[0] as Character;
-        mCurSpriteIndex = 0;
-        cha.GetComponent<SpriteRenderer>().sprite = cha.mSprites[(int)cha.mDir * 4 + mSpriteIndex[mCurSpriteIndex]];
+        startRoutine(cha);
+    }
+    public override void startRoutine(Character cha)
+    {
+        cha.StartCoroutine(updateAni(cha));
+    }
+    public override void unInit(params object[] ps)
+    {
+        base.unInit();
+    }
+
+    public IEnumerator updateAni(Character cha)
+    {
+        SpriteRenderer sr = cha.GetComponent<SpriteRenderer>();
+        while (!mCancel)
+        {
+            mCurSpriteIndex = (mCurSpriteIndex + 1) % mSpriteIndex.Count;
+            sr.sprite = cha.mSprites[(int)cha.mDir * 4 + mSpriteIndex[mCurSpriteIndex]];
+
+            yield return new WaitForSeconds(0.5f);
+        }
     }
 
     public override void update(params object[] ps)
     {
-        mTimePast += Time.deltaTime;
-
         Character cha = ps[0] as Character;
-        SpriteRenderer sr = cha.GetComponent<SpriteRenderer>();
 
         if (cha.mControlRole && CHelp.hasHit())
         {
             Vector3 touchPos = Camera.main.ScreenToWorldPoint(Input.mousePosition);
-            CMachineState.getMS().gotoState(STATE.WALK_STATE, false, new CWalkParam(cha, new Vector2(touchPos.x, touchPos.y)));
-        }
-
-        if (mTimePast > 0.5f)
-        {
-            mTimePast = 0f;
-            mCurSpriteIndex = (mCurSpriteIndex + 1) % mSpriteIndex.Count;
-            sr.sprite = cha.mSprites[(int)cha.mDir * 4 + mSpriteIndex[mCurSpriteIndex]];
+            cha.mMS.gotoState(STATE.WALK_STATE, false, new CWalkParam(cha, new Vector2(touchPos.x, touchPos.y)));
         }
     }
 
@@ -202,47 +407,65 @@ public class CWalkDir
         dir = d;
     }
 }
-public class  CWalkState : CState
+public class CWalkState : CState
 {
     public List<int> mSpriteIndex = new List<int>() { 0, 1, 2, 3 };
     public int mCurSpriteIndex = 0;
-    public Queue<CWalkDir> mTarPos = new Queue<CWalkDir>();
+    public Queue<Queue<CWalkDir>> mTarPos = new Queue<Queue<CWalkDir>>();
     public CWalkState() : base(STATE.WALK_STATE) { }
     public override void init(params object[] ps)
     {
         CWalkParam wp = ps[0] as CWalkParam;
         gotoTarPos(wp.cha.transform.position, wp.tarPos);
+        startRoutine(wp.cha);
     }
+    public override void startRoutine(Character cha)
+    {
+        cha.StartCoroutine(updateAni(cha));
+    }
+    public override void unInit(params object[] ps)
+    {
+        base.unInit();
+    }
+
+    public IEnumerator updateAni(Character cha)
+    {
+        SpriteRenderer sr = cha.GetComponent<SpriteRenderer>();
+        while (!mCancel)
+        {
+            mCurSpriteIndex = (mCurSpriteIndex + 1) % mSpriteIndex.Count;
+            sr.sprite = cha.mSprites[(int)cha.mDir * 4 + mSpriteIndex[mCurSpriteIndex]];
+
+            yield return new WaitForSeconds(0.25f);
+        }
+    }
+
     void gotoTarPos(Vector3 pos, Vector2 tar, bool append = false)
     {
         if (!append)
         {
-            for (int i = 0; i < 2; i++)
-            {
-                if (mTarPos.Count > 0)
-                    mTarPos.Dequeue();
-            }
+            if (mTarPos.Count > 0)
+                mTarPos.Dequeue();
         }
 
         float dif_x = Mathf.Abs(pos.x - tar.x);
         float dif_y = Mathf.Abs(pos.y - tar.y);
 
+        Queue<CWalkDir> wd = new Queue<CWalkDir>();
         if (dif_x < dif_y)
         {
-            mTarPos.Enqueue(new CWalkDir(new Vector2(tar.x, pos.y), tar.x > pos.x ? DIR.RIGHT : DIR.LEFT));
-            mTarPos.Enqueue(new CWalkDir(new Vector2(tar.x, tar.y), tar.y > pos.y ? DIR.TOP : DIR.DOWN));
+            wd.Enqueue(new CWalkDir(new Vector2(tar.x, pos.y), tar.x > pos.x ? DIR.RIGHT : DIR.LEFT));
+            wd.Enqueue(new CWalkDir(new Vector2(tar.x, tar.y), tar.y > pos.y ? DIR.TOP : DIR.DOWN));
         }
         else
         {
-            mTarPos.Enqueue(new CWalkDir(new Vector2(pos.x, tar.y), tar.y > pos.y ? DIR.TOP : DIR.DOWN));
-            mTarPos.Enqueue(new CWalkDir(new Vector2(tar.x, tar.y), tar.x > pos.x ? DIR.RIGHT : DIR.LEFT));
+            wd.Enqueue(new CWalkDir(new Vector2(pos.x, tar.y), tar.y > pos.y ? DIR.TOP : DIR.DOWN));
+            wd.Enqueue(new CWalkDir(new Vector2(tar.x, tar.y), tar.x > pos.x ? DIR.RIGHT : DIR.LEFT));
         }
-
+        mTarPos.Enqueue(wd);
     }
     public override void update(params object[] ps)
     {
-        mTimePast += Time.deltaTime;
-
         Character cha = ps[0] as Character;
 
         if (cha.mControlRole && CHelp.hasHit())
@@ -253,11 +476,19 @@ public class  CWalkState : CState
 
         if (mTarPos.Count <= 0)
         {
-            CMachineState.getMS().gotoState(STATE.IDLE_STATE, false, cha);
+            cha.mMS.gotoState(STATE.IDLE_STATE, false, cha);
             return;
         }
 
-        CWalkDir wd = mTarPos.Peek();
+        Queue<CWalkDir> wds = mTarPos.Peek();
+        CWalkDir wd = wds.Peek();
+
+        if (cha.mDir != wd.dir)
+        {
+            cha.mDir = wd.dir;
+            mCurSpriteIndex = 0;
+        }
+
         Vector2 tarDir = new Vector2(wd.tarPos.x - cha.transform.position.x, wd.tarPos.y - cha.transform.position.y);
         tarDir.Normalize();
 
@@ -267,24 +498,10 @@ public class  CWalkState : CState
         if (Mathf.Abs(cha.transform.position.x - wd.tarPos.x) <= 0.01 && Mathf.Abs(cha.transform.position.y - wd.tarPos.y) < 0.01)
         {
             cha.transform.position = new Vector3(wd.tarPos.x, wd.tarPos.y, cha.transform.position.z);
-            mTarPos.Dequeue();
+            wds.Dequeue();
+            if (wds.Count <= 0)
+                mTarPos.Dequeue();
         }
-
-        SpriteRenderer sr = cha.GetComponent<SpriteRenderer>();
-        if (cha.mDir != wd.dir)
-        {
-            cha.mDir = wd.dir;
-            mCurSpriteIndex = 0;
-            mTimePast = 0f;
-            sr.sprite = cha.mSprites[(int)cha.mDir * 4 + mSpriteIndex[mCurSpriteIndex]];
-        }
-        if (mTimePast > 0.25f)
-        {
-            mTimePast = 0f;
-            mCurSpriteIndex = (mCurSpriteIndex + 1) % mSpriteIndex.Count;
-            sr.sprite = cha.mSprites[(int)cha.mDir * 4 + mSpriteIndex[mCurSpriteIndex]];
-        }
-
     }
 }
 
@@ -294,20 +511,12 @@ public class CAttackState : CState
 }
 public class CMachineState
 {
-    public static CMachineState mSharedInstance = null;
     public Stack<CState> mStates = new Stack<CState>();
 
-    public static CMachineState getMS()
-    {
-        if (mSharedInstance == null)
-            mSharedInstance = new CMachineState();
-
-        return mSharedInstance;
-    }
     public void gotoState(STATE newState, bool savePreState = false, params Object[] ps)
     {
         if (mStates.Count > 0)
-            mStates.Peek().unInit();
+            mStates.Peek().unInit(ps);
 
         CState ns = geneState(newState);
         ns.init(ps);
@@ -336,6 +545,10 @@ public class CMachineState
         if (s == STATE.ATTACK_STATE)
         {
             return new CAttackState();
+        }
+        if (s == STATE.PATROL_STATE)
+        {
+            return new CPatrolState();
         }
 
         return null;

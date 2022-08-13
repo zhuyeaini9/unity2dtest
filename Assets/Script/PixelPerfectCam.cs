@@ -28,7 +28,10 @@ public class PixelPerfectCam : MonoBehaviour
     private float _pixelLockedPPU = 64.0f;
     private Vector2 _winSize;
 
-
+    public void followCha(Character cha)
+    {
+        followTarget = cha.gameObject;
+    }
     protected void Start()
     {
         _camera = this.GetComponent<Camera>();

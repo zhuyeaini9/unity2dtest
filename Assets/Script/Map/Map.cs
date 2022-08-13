@@ -23,7 +23,6 @@ public class Map : MonoBehaviour, ISaveLoad
     }
 }
 
-[System.Serializable]
 public class CMapData
 {
     public string name;
